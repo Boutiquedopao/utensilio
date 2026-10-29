@@ -1,0 +1,896 @@
+html
+<!DOCTYPE html>
+<html lang="pt-BR" class="h-full bg-slate-50">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UtensiGo - Gestão de Entregas & Utensílios Retornáveis</title>
+    <!-- Tailwind CSS Script -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tailwind CSS Config Execution after CDN load -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            700: '#0369a1',
+                            900: '#0c4a6e',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- FontAwesome icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Firebase Standard SDK Modules -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, collection, onSnapshot, setDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Environment Variables or Default Config
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'utensigo-app';
+        
+        let db = null;
+        let auth = null;
+
+        // Default public demo Firebase configuration fallback
+        const firebaseConfig = typeof __firebase_config !== 'undefined' 
+            ? JSON.parse(__firebase_config) 
+            : null;
+
+        window.initFirebaseSystem = async function() {
+            if (!firebaseConfig) {
+                console.warn("Nenhuma configuração Firebase detectada. Utilizando modo offline (localStorage).");
+                return false;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+
+                // Auth
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // Global reference for db actions
+                window.cloudDb = db;
+                window.cloudAppId = appId;
+                window.cloudAuth = auth;
+
+                // Sync data via Firestore Realtime Listener
+                const ordersCollection = collection(db, 'artifacts', appId, 'public', 'data', 'orders');
+                
+                onSnapshot(ordersCollection, (snapshot) => {
+                    const cloudOrders = [];
+                    snapshot.forEach((doc) => {
+                        cloudOrders.push({ id: doc.id, ...doc.data() });
+                    });
+
+                    // Sort orders by date / fallback creation
+                    cloudOrders.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+
+                    window.appData.orders = cloudOrders;
+                    window.isCloudSyncActive = true;
+                    window.updateUI();
+                    
+                    const syncIndicator = document.getElementById('syncIndicator');
+                    if (syncIndicator) {
+                        syncIndicator.innerHTML = '<span class="inline-flex items-center space-x-1 text-emerald-400 font-semibold"><i class="fa-solid fa-cloud text-[10px]"></i><span>Nuvem Ativa (Sincronizado)</span></span>';
+                    }
+                }, (error) => {
+                    console.error("Erro na escuta do Firestore:", error);
+                });
+
+                return true;
+            } catch (err) {
+                console.error("Falha ao inicializar o Firebase:", err);
+                return false;
+            }
+        };
+    </script>
+    <style>
+        /* Modern scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f5f9;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body class="h-full font-sans text-slate-800 flex flex-col md:flex-row antialiased overflow-x-hidden">
+
+    <!-- Mobile Header -->
+    <div class="md:hidden bg-slate-900 text-white p-4 flex items-center justify-between border-b border-slate-800 sticky top-0 z-50">
+        <div class="flex items-center space-x-3">
+            <div class="bg-brand-500 p-2 rounded-lg text-white">
+                <i class="fa-solid fa-boxes-packing text-lg"></i>
+            </div>
+            <span class="font-bold text-lg tracking-wide">Utensi<span class="text-brand-500">Go</span></span>
+        </div>
+        <button id="mobileMenuBtn" class="text-slate-300 hover:text-white p-2">
+            <i class="fa-solid fa-bars text-xl"></i>
+        </button>
+    </div>
+
+    <!-- Sidebar Navigation -->
+    <aside id="sidebar" class="hidden md:flex flex-col w-full md:w-64 bg-slate-900 text-slate-300 flex-shrink-0 z-40 transition-all duration-300">
+        <div class="p-5 hidden md:flex items-center space-x-3 border-b border-slate-800">
+            <div class="bg-brand-500 p-2.5 rounded-xl text-white shadow-lg shadow-brand-500/30">
+                <i class="fa-solid fa-boxes-packing text-xl"></i>
+            </div>
+            <div>
+                <h1 class="font-bold text-white text-lg leading-tight tracking-wide">Utensi<span class="text-brand-500">Go</span></h1>
+                <p class="text-xs text-slate-400">Gestão de Pedidos & Devoluções</p>
+            </div>
+        </div>
+
+        <div class="p-4 flex-1 space-y-1">
+            <p class="px-3 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Navegação</p>
+            
+            <button onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-btn w-full flex items-center space-x-3 px-3 py-3 rounded-xl font-medium text-sm transition-all duration-200 bg-brand-600 text-white shadow-md shadow-brand-600/20">
+                <i class="fa-solid fa-chart-pie w-5 text-center"></i>
+                <span>Dashboard</span>
+            </button>
+
+            <button onclick="switchTab('orders')" id="nav-orders" class="nav-btn w-full flex items-center space-x-3 px-3 py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:bg-slate-800 hover:text-white">
+                <i class="fa-solid fa-truck-ramp-box w-5 text-center"></i>
+                <span>Pedidos & Entregas</span>
+            </button>
+
+            <button onclick="switchTab('returns')" id="nav-returns" class="nav-btn w-full flex items-center justify-between px-3 py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:bg-slate-800 hover:text-white">
+                <div class="flex items-center space-x-3">
+                    <i class="fa-solid fa-rotate-left w-5 text-center"></i>
+                    <span>Baixa de Utensílios</span>
+                </div>
+                <span id="pendingBadge" class="bg-amber-500/20 text-amber-400 border border-amber-500/30 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+            </button>
+
+            <button onclick="switchTab('history')" id="nav-history" class="nav-btn w-full flex items-center space-x-3 px-3 py-3 rounded-xl font-medium text-sm transition-all duration-200 hover:bg-slate-800 hover:text-white">
+                <i class="fa-solid fa-clock-rotate-left w-5 text-center"></i>
+                <span>Histórico & Relatórios</span>
+            </button>
+        </div>
+
+        <!-- System Controls Footer -->
+        <div class="p-4 border-t border-slate-800 space-y-2">
+            <div id="syncIndicator" class="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60 text-[11px] text-slate-400 text-center">
+                <i class="fa-solid fa-database mr-1 text-amber-400"></i> Armazenamento Local (Offline)
+            </div>
+            <button onclick="loadDemoData()" class="w-full flex items-center justify-center space-x-2 px-3 py-2.5 rounded-xl border border-slate-700 bg-slate-800/50 hover:bg-slate-800 text-slate-300 hover:text-white text-xs font-semibold transition-all">
+                <i class="fa-solid fa-wand-magic-sparkles text-amber-400"></i>
+                <span>Carregar Dados Demo</span>
+            </button>
+            <button onclick="clearAllData()" class="w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-xl text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 text-xs font-medium transition-all">
+                <i class="fa-solid fa-trash-can"></i>
+                <span>Resetar Sistema</span>
+            </button>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col min-w-0 h-full overflow-y-auto bg-slate-50">
+        
+        <!-- Top App Bar -->
+        <header class="bg-white border-b border-slate-200 py-4 px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4 sticky top-0 z-30 shadow-sm">
+            <div>
+                <h2 id="pageTitle" class="text-xl font-bold text-slate-800">Dashboard</h2>
+                <p id="pageSubtitle" class="text-xs text-slate-500">Visão geral do sistema de entregas e materiais</p>
+            </div>
+            
+            <div class="flex items-center space-x-3">
+                <button onclick="openNewOrderModal()" class="flex items-center space-x-2 bg-brand-600 hover:bg-brand-700 active:scale-95 text-white font-medium px-4 py-2.5 rounded-xl text-sm transition-all shadow-md shadow-brand-600/20">
+                    <i class="fa-solid fa-plus text-xs"></i>
+                    <span>Novo Pedido</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Dynamic Container Views -->
+        <div class="p-4 md:p-8 flex-1 space-y-6 max-w-7xl w-full mx-auto">
+
+            <!-- TAB 1: DASHBOARD -->
+            <section id="view-dashboard" class="space-y-6">
+                <!-- Summary Metrics Cards -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Entregas Ativas</span>
+                            <div class="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+                                <i class="fa-solid fa-truck text-lg"></i>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span id="dashActiveDeliveries" class="text-2xl font-bold text-slate-800">0</span>
+                            <p class="text-xs text-slate-500 mt-1">Em preparação ou transporte</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Utensílios Pendentes</span>
+                            <div class="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center">
+                                <i class="fa-solid fa-wine-glass text-lg"></i>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span id="dashPendingItems" class="text-2xl font-bold text-slate-800">0</span>
+                            <p class="text-xs text-amber-600 font-medium mt-1">Aguardando devolução</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Pedidos Concluídos</span>
+                            <div class="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+                                <i class="fa-solid fa-circle-check text-lg"></i>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span id="dashCompletedDeliveries" class="text-2xl font-bold text-slate-800">0</span>
+                            <p class="text-xs text-emerald-600 font-medium mt-1">Produtos & materiais 100% ok</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm hover:shadow-md transition-shadow">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Taxa de Retorno</span>
+                            <div class="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+                                <i class="fa-solid fa-arrow-rotate-left text-lg"></i>
+                            </div>
+                        </div>
+                        <div class="mt-3">
+                            <span id="dashReturnRate" class="text-2xl font-bold text-slate-800">0%</span>
+                            <p class="text-xs text-slate-500 mt-1">Proporção de vasilhames devolvidos</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Activity & Urgent Items Section -->
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                    <!-- Urgent Returns Needed -->
+                    <div class="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm">
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <h3 class="font-bold text-slate-800 text-base">Utensílios em Campo (A recolher)</h3>
+                                <p class="text-xs text-slate-500">Clientes com itens retornáveis pendentes de recolhimento</p>
+                            </div>
+                            <button onclick="switchTab('returns')" class="text-xs text-brand-600 font-semibold hover:underline">Ver Todos &rarr;</button>
+                        </div>
+
+                        <div id="dashUrgentReturnsList" class="space-y-3">
+                            <!-- JS injected items -->
+                        </div>
+                    </div>
+
+                    <!-- Quick Action / Status Overview -->
+                    <div class="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex flex-col justify-between">
+                        <div>
+                            <h3 class="font-bold text-slate-800 text-base mb-1">Acesso Rápido</h3>
+                            <p class="text-xs text-slate-500 mb-4">Operações frequentes de entrega</p>
+                            
+                            <div class="space-y-3">
+                                <button onclick="openNewOrderModal()" class="w-full flex items-center p-3 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-left transition-colors group">
+                                    <div class="w-9 h-9 rounded-lg bg-brand-100 text-brand-600 flex items-center justify-center mr-3 group-hover:scale-105 transition-transform">
+                                        <i class="fa-solid fa-plus text-sm"></i>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs font-bold text-slate-800">Cadastrar Pedido</div>
+                                        <div class="text-[11px] text-slate-500">Inclua produtos e embalagens</div>
+                                    </div>
+                                </button>
+
+                                <button onclick="switchTab('returns')" class="w-full flex items-center p-3 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-left transition-colors group">
+                                    <div class="w-9 h-9 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center mr-3 group-hover:scale-105 transition-transform">
+                                        <i class="fa-solid fa-box-archive text-sm"></i>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs font-bold text-slate-800">Registrar Devolução</div>
+                                        <div class="text-[11px] text-slate-500">Dê baixa em tábuas, rechauds...</div>
+                                    </div>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div class="mt-6 pt-4 border-t border-slate-100 bg-slate-50/50 -mx-6 -mb-6 p-4 rounded-b-2xl">
+                            <div class="flex items-center space-x-2 text-xs text-slate-500">
+                                <i class="fa-solid fa-circle-info text-brand-500"></i>
+                                <span>Os dados são mantidos no seu navegador.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 2: PEDIDOS & ENTREGAS -->
+            <section id="view-orders" class="hidden space-y-6">
+                <!-- Filters & Search -->
+                <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col md:flex-row gap-3 items-center justify-between">
+                    <div class="relative w-full md:w-96">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                        <input type="text" id="orderSearchInput" onkeyup="filterOrders()" placeholder="Buscar por cliente, endereço ou item..." class="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500">
+                    </div>
+                    <div class="flex items-center space-x-2 w-full md:w-auto overflow-x-auto">
+                        <button onclick="setOrderFilter('all')" class="order-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-white" data-filter="all">Todos</button>
+                        <button onclick="setOrderFilter('Pendente')" class="order-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200" data-filter="Pendente">Pendentes</button>
+                        <button onclick="setOrderFilter('Em Trânsito')" class="order-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200" data-filter="Em Trânsito">Em Trânsito</button>
+                        <button onclick="setOrderFilter('Entregue')" class="order-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 text-slate-600 hover:bg-slate-200" data-filter="Entregue">Entregue</button>
+                    </div>
+                </div>
+
+                <!-- Orders Grid -->
+                <div id="ordersListContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <!-- Dynamic Orders Cards -->
+                </div>
+            </section>
+
+            <!-- TAB 3: BAIXA DE UTENSÍLIOS -->
+            <section id="view-returns" class="hidden space-y-6">
+                <!-- Banner header -->
+                <div class="bg-gradient-to-r from-slate-900 to-slate-800 text-white p-6 rounded-2xl shadow-lg relative overflow-hidden">
+                    <div class="relative z-10 max-w-xl">
+                        <span class="inline-block px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-bold uppercase tracking-wider mb-2">Controle de Retornáveis</span>
+                        <h3 class="text-xl font-bold mb-1">Dar Baixa nos Utensílios Recolhidos</h3>
+                        <p class="text-slate-300 text-xs leading-relaxed">Selecione o pedido do cliente e registre a quantidade de vasilhames, caixas térmicas, louças ou acessórios devolvidos após o evento/entrega.</p>
+                    </div>
+                    <i class="fa-solid fa-boxes-stacked text-slate-700/40 text-9xl absolute -right-4 -bottom-6 pointer-events-none"></i>
+                </div>
+
+                <!-- Search & Filters -->
+                <div class="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-sm">
+                    <div class="relative">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                        <input type="text" id="returnSearchInput" onkeyup="filterReturns()" placeholder="Filtrar por nome do cliente ou tipo de utensílio..." class="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500">
+                    </div>
+                </div>
+
+                <!-- List of Deliveries with Active Utensils -->
+                <div id="returnsListContainer" class="space-y-4">
+                    <!-- Dynamic items rendered via JS -->
+                </div>
+            </section>
+
+            <!-- TAB 4: HISTÓRICO -->
+            <section id="view-history" class="hidden space-y-6">
+                <div class="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+                    <div class="p-5 border-b border-slate-100 flex items-center justify-between">
+                        <div>
+                            <h3 class="font-bold text-slate-800">Histórico de Pedidos Concluídos</h3>
+                            <p class="text-xs text-slate-500">Pedidos finalizados e com todos os utensílios devolvidos com sucesso</p>
+                        </div>
+                        <span id="historyCountBadge" class="bg-emerald-100 text-emerald-800 text-xs font-bold px-3 py-1 rounded-full">0 concluídos</span>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="bg-slate-50 border-b border-slate-200 text-[11px] font-bold uppercase text-slate-500 tracking-wider">
+                                    <th class="p-4">Cód / Cliente</th>
+                                    <th class="p-4">Data Entrega</th>
+                                    <th class="p-4">Produtos</th>
+                                    <th class="p-4">Utensílios Recolhidos</th>
+                                    <th class="p-4">Comprovante</th>
+                                    <th class="p-4 text-right">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="historyTableBody" class="divide-y divide-slate-100 text-sm">
+                                <!-- JS Table Rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+        </div>
+    </main>
+
+    <!-- MODAL: NOVO PEDIDO -->
+    <div id="newOrderModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <!-- Modal Header -->
+            <div class="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-truck-ramp-box text-brand-400"></i>
+                    <h3 class="font-bold text-lg">Novo Pedido de Entrega</h3>
+                </div>
+                <button onclick="closeNewOrderModal()" class="text-slate-400 hover:text-white p-1">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <!-- Modal Body Form -->
+            <form id="orderForm" onsubmit="handleCreateOrder(event)" class="p-6 overflow-y-auto space-y-6 flex-1">
+                <!-- Customer Details -->
+                <div class="space-y-4">
+                    <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400 border-b pb-1">1. Informações do Cliente & Entrega</h4>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-700 mb-1">Nome do Cliente *</label>
+                            <input type="text" id="customerName" required placeholder="Ex: Maria Silva / Evento Buffet" class="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 focus:outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-slate-700 mb-1">Data da Entrega *</label>
+                            <input type="date" id="deliveryDate" required class="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 focus:outline-none">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-700 mb-1">Endereço de Entrega *</label>
+                        <input type="text" id="deliveryAddress" required placeholder="Rua, Número, Bairro e Ponto de Referência" class="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 focus:outline-none">
+                    </div>
+                </div>
+
+                <!-- Products Section -->
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between border-b pb-1">
+                        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-400">2. Produtos do Pedido</h4>
+                        <button type="button" onclick="addProductRow()" class="text-xs font-bold text-brand-600 hover:text-brand-700 flex items-center space-x-1">
+                            <i class="fa-solid fa-plus text-[10px]"></i>
+                            <span>Adicionar Item</span>
+                        </button>
+                    </div>
+                    
+                    <div id="productsContainer" class="space-y-2">
+                        <!-- Dynamic Product Rows -->
+                    </div>
+                </div>
+
+                <!-- Utensils / Returnable Equipment Section -->
+                <div class="space-y-3 pt-2">
+                    <div class="flex items-center justify-between border-b pb-1">
+                        <div class="flex items-center space-x-2">
+                            <h4 class="text-xs font-bold uppercase tracking-wider text-amber-600">3. Utensílios & Embalagens Retornáveis</h4>
+                            <span class="text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-semibold">Exige Devolução</span>
+                        </div>
+                        <button type="button" onclick="addUtensilRow()" class="text-xs font-bold text-amber-600 hover:text-amber-700 flex items-center space-x-1">
+                            <i class="fa-solid fa-plus text-[10px]"></i>
+                            <span>Adicionar Utensílio</span>
+                        </button>
+                    </div>
+                    
+                    <div id="utensilsContainer" class="space-y-2">
+                        <!-- Dynamic Utensils Rows -->
+                    </div>
+                </div>
+
+                <!-- Footer Buttons -->
+                <div class="pt-4 border-t border-slate-100 flex items-center justify-end space-x-3">
+                    <button type="button" onclick="closeNewOrderModal()" class="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-semibold transition-colors">Cancelar</button>
+                    <button type="submit" class="px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold shadow-md shadow-brand-600/20 transition-all">Salvar & Cadastrar Pedido</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MODAL: ASSINATURA DIGITAL NA DEVOLUÇÃO -->
+    <div id="signatureModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div class="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-signature text-amber-400"></i>
+                    <h3 class="font-bold text-lg">Assinatura do Recebedor</h3>
+                </div>
+                <button onclick="closeSignatureModal()" class="text-slate-400 hover:text-white p-1">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <div class="p-6 space-y-4">
+                <p class="text-xs text-slate-600">Por favor, solicite ao cliente a assinatura abaixo para confirmar a devolução de todos os utensílios do pedido <span id="sigOrderCode" class="font-mono font-bold text-slate-800"></span>.</p>
+                
+                <div class="border-2 border-dashed border-slate-300 rounded-xl bg-slate-50 relative overflow-hidden">
+                    <canvas id="signatureCanvas" class="w-full h-44 cursor-crosshair touch-none"></canvas>
+                    <div class="absolute bottom-2 right-2 text-[10px] text-slate-400 font-semibold pointer-events-none">Desenhe a assinatura na área acima</div>
+                </div>
+
+                <div class="flex items-center justify-between pt-2">
+                    <button type="button" onclick="clearSignatureCanvas()" class="text-xs font-semibold text-slate-500 hover:text-rose-600 flex items-center space-x-1">
+                        <i class="fa-solid fa-eraser"></i>
+                        <span>Limpar Assinatura</span>
+                    </button>
+                    <div class="flex space-x-2">
+                        <button type="button" onclick="closeSignatureModal()" class="px-3.5 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-semibold">Cancelar</button>
+                        <button type="button" onclick="saveSignatureAndComplete()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-md transition-all">Confirmar Devolução & Finalizar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL: VISUALIZAR ASSINATURA -->
+    <div id="viewSigModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full flex flex-col overflow-hidden">
+            <div class="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-file-signature text-emerald-400"></i>
+                    <h3 class="font-bold text-base">Comprovante de Assinatura</h3>
+                </div>
+                <button onclick="closeViewSigModal()" class="text-slate-400 hover:text-white p-1">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+            <div class="p-6 text-center space-y-4">
+                <p id="viewSigDetails" class="text-xs text-slate-600 font-medium"></p>
+                <div class="border border-slate-200 rounded-xl p-3 bg-slate-50">
+                    <img id="viewSigImage" src="" alt="Assinatura Digital" class="max-h-48 mx-auto object-contain">
+                </div>
+                <button onclick="closeViewSigModal()" class="w-full py-2 bg-slate-800 text-white text-xs font-bold rounded-xl">Fechar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST NOTIFICATION -->
+    <div id="toast" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none flex items-center space-x-3 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl border border-slate-800 text-sm">
+        <i id="toastIcon" class="fa-solid fa-circle-check text-emerald-400 text-lg"></i>
+        <span id="toastMessage">Operação realizada com sucesso!</span>
+    </div>
+
+    <!-- JAVASCRIPT APP LOGIC -->
+    <script>
+        // Data State Management
+        window.appData = {
+            orders: []
+        };
+
+        window.isCloudSyncActive = false;
+        let currentFilter = 'all';
+        let currentSigningOrderId = null;
+        let isDrawing = false;
+        let sigCanvas, sigCtx;
+
+        // Preset options for quick pick in dropdowns
+        const PRESET_UTENSILS = [
+            "Caixa Térmica (Isopor/Plástico)",
+            "Bandeja de Inox",
+            "Garrafa de Vidro / Jarra",
+            "Tábua de Madeira",
+            "Rechaud Inox Completo",
+            "Pratos de Louça (Jogo)",
+            "Copos/Taças de Vidro (Caixa)",
+            "Talheres Inox (Kit)",
+            "Cesta de Vime",
+            "Caixa de Transporte Plástica"
+        ];
+
+        // Initialization
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Set default date input in modal to today
+            document.getElementById('deliveryDate').valueAsDate = new Date();
+            
+            // Try initializing cloud Firebase or fallback to local
+            if (window.initFirebaseSystem) {
+                const cloudConnected = await window.initFirebaseSystem();
+                if (!cloudConnected) {
+                    loadState();
+                }
+            } else {
+                loadState();
+            }
+
+            // Mobile menu toggle
+            document.getElementById('mobileMenuBtn').addEventListener('click', () => {
+                const sidebar = document.getElementById('sidebar');
+                sidebar.classList.toggle('hidden');
+            });
+
+            // Add default row to modal forms
+            resetOrderForm();
+
+            // Init Canvas Events
+            initSignatureCanvas();
+        });
+
+        // Save & Load Functions
+        async function saveState() {
+            if (window.isCloudSyncActive && window.cloudDb) {
+                // If cloud is connected, update state through Firestore
+                for (const order of window.appData.orders) {
+                    try {
+                        const { getFirestore, doc, setDoc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+                        const orderRef = doc(window.cloudDb, 'artifacts', window.cloudAppId, 'public', 'data', 'orders', order.id);
+                        await setDoc(orderRef, order, { merge: true });
+                    } catch(err) {
+                        console.error("Erro ao salvar no Firestore:", err);
+                    }
+                }
+            } else {
+                localStorage.setItem('utensigo_data', JSON.stringify(window.appData));
+            }
+            updateUI();
+        }
+
+        function loadState() {
+            const saved = localStorage.getItem('utensigo_data');
+            if (saved) {
+                try {
+                    window.appData = JSON.parse(saved);
+                } catch (e) {
+                    console.error('Error parsing localStorage data', e);
+                    window.appData = { orders: [] };
+                }
+            } else {
+                // Initial demo data if empty
+                loadDemoData(false);
+            }
+            updateUI();
+        }
+
+        async function deleteOrder(orderId) {
+            if (confirm(`Tem certeza que deseja excluir o pedido #${orderId}?`)) {
+                if (window.isCloudSyncActive && window.cloudDb) {
+                    try {
+                        const { doc, deleteDoc } = await import("https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js");
+                        const orderRef = doc(window.cloudDb, 'artifacts', window.cloudAppId, 'public', 'data', 'orders', orderId);
+                        await deleteDoc(orderRef);
+                    } catch(e) {
+                        console.error("Erro ao deletar no Firestore:", e);
+                    }
+                } else {
+                    window.appData.orders = window.appData.orders.filter(o => o.id !== orderId);
+                    saveState();
+                }
+                showToast("Pedido excluído.");
+            }
+        }
+
+        function adjustUtensilReturn(orderId, utensilId, delta) {
+            const order = appData.orders.find(o => o.id === orderId);
+            if (!order) return;
+
+            const utensil = order.utensils.find(u => u.id === utensilId);
+            if (!utensil) return;
+
+            const newQty = utensil.returned + delta;
+            if (newQty >= 0 && newQty <= utensil.total) {
+                utensil.returned = newQty;
+
+                checkAutoFinalizeOrder(order);
+
+                saveState();
+                showToast(`Devolução de ${utensil.name} atualizada (${utensil.returned}/${utensil.total})`);
+            }
+        }
+
+        function returnSingleUtensilComplete(orderId, utensilId) {
+            const order = appData.orders.find(o => o.id === orderId);
+            if (!order) return;
+
+            const utensil = order.utensils.find(u => u.id === utensilId);
+            if (utensil) {
+                utensil.returned = utensil.total;
+                checkAutoFinalizeOrder(order);
+                saveState();
+                showToast(`Baixa total registrada para ${utensil.name}!`);
+            }
+        }
+
+        function returnAllUtensils(orderId) {
+            const order = appData.orders.find(o => o.id === orderId);
+            if (order) {
+                order.utensils.forEach(u => u.returned = u.total);
+                checkAutoFinalizeOrder(order);
+                saveState();
+                showToast(`Todos os utensílios do pedido #${orderId} foram devolvidos!`);
+            }
+        }
+
+        function checkAutoFinalizeOrder(order) {
+            const allReturned = order.utensils.every(u => u.returned >= u.total);
+            if (allReturned && order.status === 'Entregue') {
+                order.status = 'Finalizado';
+            }
+        }
+
+        // Modal Order Creation Logic
+        function openNewOrderModal() {
+            resetOrderForm();
+            document.getElementById('newOrderModal').classList.remove('hidden');
+        }
+
+        function closeNewOrderModal() {
+            document.getElementById('newOrderModal').classList.add('hidden');
+        }
+
+        function resetOrderForm() {
+            document.getElementById('orderForm').reset();
+            document.getElementById('deliveryDate').valueAsDate = new Date();
+            
+            // Containers
+            const productsCont = document.getElementById('productsContainer');
+            const utensilsCont = document.getElementById('utensilsContainer');
+
+            productsCont.innerHTML = '';
+            utensilsCont.innerHTML = '';
+
+            // Add initial empty rows
+            addProductRow();
+            addUtensilRow();
+        }
+
+        function addProductRow() {
+            const container = document.getElementById('productsContainer');
+            const rowId = 'prod_' + Date.now() + Math.random().toString(36).substr(2, 4);
+
+            const div = document.createElement('div');
+            div.id = rowId;
+            div.className = 'flex items-center space-x-2';
+            div.innerHTML = `
+                <input type="text" placeholder="Nome do Produto (Ex: 100 Salgados, Bolo)" required class="product-name flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-brand-500">
+                <input type="number" min="1" value="1" placeholder="Qtd" required class="product-qty w-20 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-brand-500 text-center">
+                <button type="button" onclick="removeRow('${rowId}')" class="text-slate-400 hover:text-rose-500 p-2">
+                    <i class="fa-solid fa-trash-can text-sm"></i>
+                </button>
+            `;
+            container.appendChild(div);
+        }
+
+        function addUtensilRow() {
+            const container = document.getElementById('utensilsContainer');
+            const rowId = 'uten_' + Date.now() + Math.random().toString(36).substr(2, 4);
+
+            const optionsHtml = PRESET_UTENSILS.map(u => `<option value="${u}">${u}</option>`).join('');
+
+            const div = document.createElement('div');
+            div.id = rowId;
+            div.className = 'flex items-center space-x-2';
+            div.innerHTML = `
+                <select class="utensil-name flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-brand-500">
+                    <option value="">-- Selecione ou digite um utensílio --</option>
+                    ${optionsHtml}
+                </select>
+                <input type="number" min="1" value="1" placeholder="Qtd" required class="utensil-qty w-20 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-brand-500 text-center">
+                <button type="button" onclick="removeRow('${rowId}')" class="text-slate-400 hover:text-rose-500 p-2">
+                    <i class="fa-solid fa-trash-can text-sm"></i>
+                </button>
+            `;
+            container.appendChild(div);
+        }
+
+        function removeRow(rowId) {
+            const row = document.getElementById(rowId);
+            if (row) row.remove();
+        }
+
+        function handleCreateOrder(e) {
+            e.preventDefault();
+
+            const customer = document.getElementById('customerName').value.trim();
+            const date = document.getElementById('deliveryDate').value;
+            const address = document.getElementById('deliveryAddress').value.trim();
+
+            // Extract products
+            const productNames = document.querySelectorAll('.product-name');
+            const productQtys = document.querySelectorAll('.product-qty');
+            const products = [];
+
+            productNames.forEach((input, index) => {
+                const val = input.value.trim();
+                const qty = parseInt(productQtys[index].value) || 1;
+                if (val) {
+                    products.push({ name: val, qty: qty });
+                }
+            });
+
+            // Extract utensils
+            const utensilNames = document.querySelectorAll('.utensil-name');
+            const utensilQtys = document.querySelectorAll('.utensil-qty');
+            const utensils = [];
+
+            utensilNames.forEach((input, index) => {
+                const val = input.value.trim();
+                const qty = parseInt(utensilQtys[index].value) || 1;
+                if (val) {
+                    utensils.push({
+                        id: 'u_' + Date.now() + index,
+                        name: val,
+                        total: qty,
+                        returned: 0
+                    });
+                }
+            });
+
+            const newOrder = {
+                id: 'PED-' + Math.floor(1000 + Math.random() * 9000),
+                customer,
+                address,
+                date,
+                status: 'Pendente',
+                products,
+                utensils
+            };
+
+            appData.orders.unshift(newOrder);
+            saveState();
+
+            closeNewOrderModal();
+            showToast("Novo pedido cadastrado com sucesso!");
+        }
+
+        // Helpers & Utilities
+        function getStatusBadge(status) {
+            switch (status) {
+                case 'Pendente':
+                    return '<span class="bg-slate-100 text-slate-700 text-xs font-bold px-2.5 py-1 rounded-lg">Pendente</span>';
+                case 'Em Trânsito':
+                    return '<span class="bg-blue-100 text-blue-800 text-xs font-bold px-2.5 py-1 rounded-lg">Em Trânsito</span>';
+                case 'Entregue':
+                    return '<span class="bg-amber-100 text-amber-800 text-xs font-bold px-2.5 py-1 rounded-lg">Entregue</span>';
+                case 'Finalizado':
+                    return '<span class="bg-emerald-100 text-emerald-800 text-xs font-bold px-2.5 py-1 rounded-lg">Finalizado</span>';
+                default:
+                    return '';
+            }
+        }
+
+        function getUtensilStatusSummary(utensils) {
+            const total = utensils.reduce((a, u) => a + u.total, 0);
+            const returned = utensils.reduce((a, u) => a + u.returned, 0);
+            if (returned === total) return "100% Devolvido";
+            return `${returned} de ${total} devolvidos`;
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return '';
+            const parts = dateStr.split('-');
+            if (parts.length === 3) {
+                return `${parts[2]}/${parts[1]}/${parts[0]}`;
+            }
+            return dateStr;
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#030;");
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const msgEl = document.getElementById('toastMessage');
+            const iconEl = document.getElementById('toastIcon');
+
+            msgEl.textContent = message;
+
+            if (type === 'warning') {
+                iconEl.className = 'fa-solid fa-triangle-exclamation text-amber-400 text-lg';
+            } else if (type === 'info') {
+                iconEl.className = 'fa-solid fa-circle-info text-blue-400 text-lg';
+            } else {
+                iconEl.className = 'fa-solid fa-circle-check text-emerald-400 text-lg';
+            }
+
+            toast.classList.remove('translate-y-20', 'opacity-0');
+            toast.classList.add('translate-y-0', 'opacity-100');
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-0', 'opacity-100');
+                toast.classList.add('translate-y-20', 'opacity-0');
+            }, 3000);
+        }
+    </script>
+</body>
+</html>
